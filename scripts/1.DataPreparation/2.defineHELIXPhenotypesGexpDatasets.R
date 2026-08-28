@@ -3,9 +3,8 @@
 #' docker run -it -v $PWD:$PWD -w $PWD dimorphic_r:1.3 R
 ###############################################################################
 
-library(dplyr)
+library(tidyverse)
 library(SummarizedExperiment)
-library(tidyr)
 
 ## Load data ####
 pheno.raw <- read.csv("data/ap103_31ene.2023.csv")
@@ -14,9 +13,12 @@ rownames(pheno.raw) <- pheno.raw$HelixID
 load("results/preprocessFiles/Expression_SE_raw.RData")
 colnames(se) <- se$HelixID
 
-## Filter SE to have only children <= 10 yo
-se_age <- se[, se$age_sample_years <= 10 & se$cohort != "EDEN"]
+pheno.ados <- read_csv("data/HELIX_AP_133_onlypuberty_04052026.csv")
 
+comb_df <- left_join(colData(se) %>% as.data.frame(), pheno.ados, by = "HelixID")
+se$adolescence <- ifelse(is.na(comb_df$PDSS_dic_Shirtcliff) | comb_df$PDSS_dic_Shirtcliff == 1, "Child", "Adolescent")
+
+se_child <- se[, se$adolescence == "Child"]
 
 ## Select phenotypes after discussing with Mariona
 sel_phenos <- c("hs_c_height", "hs_c_weight", "hs_c_bmi", "hs_bp_sys", "hs_bp_dia", 
@@ -25,8 +27,8 @@ sel_phenos <- c("hs_c_height", "hs_c_weight", "hs_c_bmi", "hs_bp_sys", "hs_bp_di
                 "hs_ADHD_raw", "hs_correct_raven", "hs_Gen_Int",
                 "hs_Cognit_raw", "hs_Gen_Ext", "hs_Hyper_raw", "h_edumc")
 
-phenos.filt <- pheno.raw[intersect(se_age$HelixID, rownames(pheno.raw)), sel_phenos ]
-se.filt <- se_age[,  rownames(phenos.filt)]
+phenos.filt <- pheno.raw[intersect(se_child$HelixID, rownames(pheno.raw)), sel_phenos ]
+se.filt <- se_child[,  rownames(phenos.filt)]
 save(se.filt, file = "results/preprocessFiles/Expression_SE_raw_filtered.Rdata")
 
 ## Redefine categories

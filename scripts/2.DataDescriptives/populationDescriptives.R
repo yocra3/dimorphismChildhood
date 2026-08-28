@@ -268,7 +268,7 @@ getSumSex <- function(tab, varname, type = "continuous"){
                 range.25 = quantile(var, probs = 0.25, na.rm = TRUE),
                 range.75 = quantile(var, probs = 0.75, na.rm = TRUE)) %>%
       mutate(val = sprintf("%.2f (%.2f-%.2f)", median, range.25, range.75)) %>%
-      select(e3_sex, val)
+      dplyr::select(e3_sex, val)
     
   } else if (type == "categorical"){
     df %>%
@@ -276,7 +276,7 @@ getSumSex <- function(tab, varname, type = "continuous"){
       summarize(N = n()) %>%
       group_by(e3_sex) %>%
       mutate(val = paste0(N, " (", round(N/sum(N)*100, 1), "%)")) %>%
-      select(e3_sex, var, val) %>%
+      dplyr::select(e3_sex, var, val) %>%
       spread(var, val)
   }
 }

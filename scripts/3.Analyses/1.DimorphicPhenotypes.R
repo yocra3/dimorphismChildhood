@@ -12,8 +12,9 @@ library(cowplot)
 library(S4Vectors)
 library(readxl)
 library(ggcorrplot)
-library(forestploter)
+#library(forestploter)
 library(MASS)
+library(meta)
 
 ## Load data ####
 load("results/preprocessFiles/filtered_phenotypes.Rdata")
@@ -242,7 +243,7 @@ legend <- get_legend(df_pheno_assocs %>%
   ggplot(aes(x = Phenotype, y = coef, color = Direction)) +
                        theme_bw(20) +
                        geom_point() +
-  scale_color_manual(name = "Effect Direction",
+  scale_color_manual(name = "Effect",
                      breaks = c("Higher Boys", "Higher Girls", "No differences"),
                      values = c("blue", "maroon", "black"))
 )
@@ -270,6 +271,160 @@ dev.off()
 group_by(df_pheno_assocs, Category) %>%
   summarize(Total = n(),
             Significative = sum(FDR < 0.05))
+
+## Compute meta-analysis
+cohorts <- unique(all_phenos$cohort)
+names(cohorts) <- cohorts
+cohorts_name <- recode(cohorts, SAB = "INMA")
+
+dim_phenos_cont_cohort <- lapply(phenos_cont, function(phe){
+  message(phe)
+  lapply(cohorts, function(coh){
+    lm(formula(paste(phe, "~ e3_sex + age_sample_years + mat_educ")), 
+       all_phenos, subset = cohort == coh)
+  })
+})
+names(dim_phenos_cont_cohort) <- phenos_cont
+
+dim_phenos_cont_meta <- lapply(dim_phenos_cont_cohort, function(models){
+  te <- sapply(models, function(m) summary(m)$coefficients[2, 1])
+  sete <- sapply(models, function(m) summary(m)$coefficients[2, 2])
+  n <- sapply(models, nobs)
+  metagen(
+    TE = te,
+    seTE = sete,
+    n.e = n,
+    studlab = as.character(cohorts_name[cohorts]),
+    sm = "MD",
+    method.tau = "REML"
+   )
+})
+
+phenos_count_cohort <- lapply(phenos_count, function(phe){
+  message(phe)
+  lapply(cohorts, function(coh){
+      glm.nb(formula(paste(phe, " ~ e3_sex + age_sample_years  + mat_educ")), 
+              all_phenos, subset = cohort == coh)
+  })
+})
+names(phenos_count_cohort) <- phenos_count
+
+phenos_count_meta <- lapply(phenos_count_cohort, function(models){
+  te <- sapply(models, function(m) summary(m)$coefficients[2, 1])
+  sete <- sapply(models, function(m) summary(m)$coefficients[2, 2])
+  n <- sapply(models, nobs)
+  metagen(
+    TE = te,
+    seTE = sete,
+    n.e = n,
+    studlab = as.character(cohorts_name[cohorts]),
+    sm = "RR",
+    method.tau = "REML"
+  )
+})
+
+phenos_cat_cohort <- lapply(phenos_cat, function(phe){
+  message(phe)
+  lapply(cohorts, function(coh){
+    glm(formula(paste("factor(", phe, ", ordered = TRUE) ~ e3_sex + age_sample_years + mat_educ")),
+        all_phenos, subset = cohort == coh, family = "binomial")
+  })
+})
+names(phenos_cat_cohort) <- phenos_cat
+
+phenos_cat_meta <- lapply(names(phenos_cat_cohort), function(phe){
+  models <- phenos_cat_cohort[[phe]]
+  te <- sapply(models, function(m) summary(m)$coefficients[2, 1])
+  sete <- sapply(models, function(m) summary(m)$coefficients[2, 2])
+  n <- sapply(models, nobs)
+  if (phe == "algy_food" && "BIB" %in% names(te)) {
+    te["BIB"] <- NA
+    sete["BIB"] <- NA
+    n["BIB"] <- NA
+  }
+  
+  metagen(
+    TE = te,
+    seTE = sete,
+    n.e = n,
+    studlab = as.character(cohorts_name[cohorts]),
+    sm = "OR",
+    method.tau = "REML"
+  )
+})
+names(phenos_cat_meta) <- names(phenos_cat_cohort)
+
+raven_cohort <- lapply(cohorts, function(coh){
+  glm(hs_correct_raven ~ e3_sex + age_sample_years + mat_educ,
+      all_phenos, subset = cohort == coh, family = "poisson")
+})
+names(raven_cohort) <- cohorts
+
+raven_meta <- metagen(
+  TE = sapply(raven_cohort, function(m) summary(m)$coefficients[2, 1]),
+  seTE = sapply(raven_cohort, function(m) summary(m)$coefficients[2, 2]),
+  n.e = sapply(raven_cohort, nobs),
+  studlab = as.character(cohorts_name[cohorts]),
+  sm = "RR",
+  method.tau = "REML"
+)
+
+
+plot_forest <- function(meta, var){
+  title <- pheno_vec_name[var]
+  grid::grid.grabExpr(
+    forest(meta,
+           smlab = title,
+           prediction = TRUE,
+           leftcols = c("studlab", "n.e"),
+           leftlabs = c("Cohort", "N"),
+           rightcols = c("effect", "ci"),
+           test.overall.common = TRUE,
+           test.overall.random = TRUE,
+           label.left = "Higher Girls",
+           label.right = "Higher Boys",
+           addrows.below.overall = 3)
+  )
+}
+
+### Figure 2B
+
+meta_objs <- c(dim_phenos_cont_meta, phenos_count_meta, phenos_cat_meta, list(hs_correct_raven= raven_meta))
+
+main_phenos <- c("height", "hs_c_weight", "hs_skf_sum2", "hs_bp_sys", 
+                 "hs_ADHD_raw", "hs_Cognit_raw", "hs_Gen_Ext", "hs_Hyper_raw")
+
+
+main_forest <- lapply(main_phenos, function(phe){
+  plot_forest(meta_objs[[phe]], phe)
+})
+
+
+forest_panel <- plot_grid(plotlist = main_forest, nrow = 3)
+png("figures/dimorphic_phenos_forest.png", width = 6500, height = 3500, res = 300)
+forest_panel
+dev.off()
+
+sup_phenos <- c("hs_c_bmi", "hs_waist", "hs_midup_arm", "hs_w2h", "hs_bp_dia",
+              "asthma", "eczema", "algy_food", "rhin",
+              "hs_correct_raven", "hs_Gen_Int")
+
+sup_forest <- lapply(sup_phenos, function(phe){
+  plot_forest(meta_objs[[phe]], phe)
+})
+
+png("figures/sup_phenos_forest.png", height = 5000, width = 6500, res = 300)
+plot_grid(plotlist = sup_forest, nrow = 4)
+dev.off()
+
+
+
+## Figure 2
+png("figures/dimorphic_phenos_panel.png", width = 6000, height = 6000, res = 300)
+plot_grid(plot_coef_all, forest_panel, rel_heights = c(1, 1.7), nrow = 2, labels = "AUTO")
+dev.off()
+
+
 
 ## Compute correlation between phenotypes ####
 phenos_cor_mat <- all_phenos[, df_pheno_assocs$var]
@@ -299,117 +454,4 @@ png("figures/selected_phenos_cor.png", width = 3000, height = 3000, res = 300)
 pheno_cor
 dev.off()
 
-
-### Individual phenotypes forest ####
-### Figure 2B
-cohorts <- unique(all_phenos$cohort)
-names(cohorts) <- cohorts
-cohorts_name <- recode(cohorts, SAB = "INMA")
-
-
-dim_phenos_cont_cohort <- lapply(phenos.dim[phenos.dim %in% phenos_cont], function(phe){
-  message(phe)
-  lapply(cohorts, function(coh){
-    lm(formula(paste(phe, "~ e3_sex + age_sample_years + mat_educ")), 
-       all_phenos, subset = cohort == coh)
-  })
-})
-names(dim_phenos_cont_cohort) <- phenos.dim[phenos.dim %in% phenos_cont]
-
-dim_phenos_count_cohort <- lapply(phenos.dim[phenos.dim %in% phenos_count], function(phe){
-  message(phe)
-  lapply(cohorts, function(coh){
-      glm.nb(formula(paste(phe, " ~ e3_sex + age_sample_years  + mat_educ")), 
-              all_phenos, subset = cohort == coh)
-  })
-})
-names(dim_phenos_count_cohort) <- phenos.dim[phenos.dim %in% phenos_count]
-
-
-
-
-dim_phenos_cont_coef <- lapply(dim_phenos_cont_cohort, function(l){
-  sapply(l, function(x) c(summary(x)$coefficients[2, ], confint(x)[2, ]))
-})
-
-dim_phenos_count_coef <- lapply(dim_phenos_count_cohort, function(l){
-  sapply(l, function(x) exp(c(summary(x)$coefficients[2, ], confint(x)[2, ])))
-})
-
-dim_phenos_cohort <- c(dim_phenos_cont_coef, dim_phenos_count_coef)
-
-
-png("cot.png")  
-forest_l <- lapply(names(dim_phenos_cont_coef), function(phe){
-  df_for <-  data.frame(Cohort = cohorts_name, 
-                        Boys = sapply(cohorts, function(x) sum(all_phenos$e3_sex[all_phenos$cohort == x] == "male")),
-                        Girls = sapply(cohorts, function(x) sum(all_phenos$e3_sex[all_phenos$cohort == x] == "female")),
-                        est = dim_phenos_cont_coef[[phe]][1, ],
-                        low = dim_phenos_cont_coef[[phe]][5, ],
-                        high = dim_phenos_cont_coef[[phe]][6, ],
-                        se = dim_phenos_cont_coef[[phe]][2, ],
-                        CI = paste(rep(" ", 60), collapse = "")
-  )
-  df_for$`MD (95% CI)` <- ifelse(is.na(df_for$se), "",
-                                 sprintf("%.2f (%.2f to %.2f)",
-                                         df_for$est, df_for$low, df_for$hi))
-  lim <- max(abs(c(df_for$hi, df_for$low))) + 0.1
-  p <- forest(df_for[,c(1:3, 8:9)],
-              est = df_for$est,
-              lower = df_for$low, 
-              upper = df_for$hi,
-              sizes = 1,
-              ci_column = 4,
-              ref_line = 0,
-              arrow_lab = c("Higher Girls", "Higher Boys"),
-              xlim = c(-lim, lim),
-              ticks_at = seq(ceiling(-lim/2), ceiling(lim/2), ceiling(lim/4)),
-              title = pheno_vec_name[phe],
-              theme = forest_theme(title_just = "center")) 
-})
-dev.off()
-
-
-
-forest_l2 <- lapply(names(dim_phenos_count_coef), function(phe){
-  df_for <-  data.frame(Cohort = cohorts_name, 
-                        Boys = sapply(cohorts, function(x) sum(all_phenos$e3_sex[all_phenos$cohort == x] == "male")),
-                        Girls = sapply(cohorts, function(x) sum(all_phenos$e3_sex[all_phenos$cohort == x] == "female")),
-                        est = dim_phenos_count_coef[[phe]][1, ],
-                        low = dim_phenos_count_coef[[phe]][5, ],
-                        high = dim_phenos_count_coef[[phe]][6, ],
-                        se = dim_phenos_count_coef[[phe]][2, ],
-                        CI = paste(rep(" ", 60), collapse = "")
-  )
-  df_for$`RR (95% CI)` <- ifelse(is.na(df_for$se), "",
-                                 sprintf("%.2f (%.2f to %.2f)",
-                                         df_for$est, df_for$low, df_for$hi))
-  lim <- max(abs(c(df_for$hi, df_for$low))) + 0.1
-  p <- forest(df_for[,c(1:3, 8:9)],
-              est = df_for$est,
-              lower = df_for$low, 
-              upper = df_for$hi,
-              sizes = 1,
-              ci_column = 4,
-              ref_line = 1,
-              arrow_lab = c("Higher Girls", "Higher Boys"),
-              xlim = c(0.8, 6),
-              ticks_at = c(1, 2, 4),
-              title = pheno_vec_name[phe],
-              x_trans = "log2",
-              theme = forest_theme(title_just = "center")) 
-})
-dev.off()
-
-forest_panel <- plot_grid(forest_l[[1]], forest_l[[2]], forest_l[[3]],
-                          forest_l2[[3]], forest_l2[[1]], forest_l2[[4]],
-                          forest_l2[[2]], nrow = 4)
-png("figures/all_phenos_forest.png", height = 4500, width = 8000, res = 300)
-forest_panel
-dev.off()
-
-## Figure 2
-png("figures/dimorphic_phenos_panel.png", width = 5000, height = 5200, res = 300)
-plot_grid(plot_coef_all, forest_panel, rel_heights = c(1, 1.4), nrow = 2, labels = "AUTO")
-dev.off()
 
