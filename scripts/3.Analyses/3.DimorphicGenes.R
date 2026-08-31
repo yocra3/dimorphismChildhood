@@ -179,6 +179,11 @@ gene_cohort_summary$dimorphic <- ifelse(gene_cohort_summary$adj.P.Val < 0.01 & g
 
 save(gene_cohort_summary, file = "results/genes/HELIX_cohort_genes_summary.Rdata")
 
+write.table(gene_cohort_summary %>%
+  select(TC, Symbol, Coding, chr, logFC, CI.L, CI.R, P.Value, adj.P.Val, TE_fixed, P_fixed, TE_random, P_random, coherent, dimorphic), 
+  file = "results/genes/HELIX_cohort_genes_summary.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
+
 png("figures/Genes/EffectSizesMeta.png", width = 2000, height = 1200, res = 300)
 gene_cohort_summary %>% select(logFC, TE_fixed, TE_random, dimorphic) %>%
   filter(logFC > -2) %>%
@@ -190,6 +195,7 @@ gene_cohort_summary %>% select(logFC, TE_fixed, TE_random, dimorphic) %>%
   geom_point() +
   theme_bw() +
   scale_color_manual(values = c("Higher Boys" = "blue", "Higher Girls" = "maroon", "No differences" = "black")) +
+  stat_cor(inherit.aes = FALSE, aes(x = logFC, y = coef), method = "pearson", label.x = -1, label.y = 0.35) +
   facet_grid(dimorphic~Method) +
   xlab("Pooled logFC") +
   ylab("Meta-analysis logFC")
@@ -306,47 +312,13 @@ subset(gene_cohort_summary, Symbol %in% child_TFs) %>%
   arrange(P.Value) %>%
   data.frame()
 
-## Check cell type proportion
-### Methylation-based cell type proportion
-methy_cells <- c("NK_6", "Bcell_6", "CD4T_6", "CD8T_6", "Gran_6", "Mono_6")
-clr_methy <- clr(data.matrix(colData(se.noY)[, methy_cells]))
-clr_methy_tib <- bind_cols(as_tibble(clr_methy), 
-  tibble(age = se.noY$age_sample_years, sex = se.noY$e3_sex, cohort = se.noY$cohort))
 
-clr_methy_tests <- lapply(methy_cells, function(cell) {
-  lm_mod <- robustbase::lmrob(as.formula(paste(cell, "~ sex + age + cohort")), data = clr_methy_tib) %>%
-    summary() 
-  tibble(Cell = cell, 
-         Estimate = coef(lm_mod)[2, 1], 
-         Estimate_exp = exp(coef(lm_mod)[2, 1]),
-         Pvalue = coef(lm_mod)[2, 4])
-}) %>% Reduce(rbind, .)
-write.table(clr_methy_tests, file = "results/genes/methy_celltype_proportion_tests.txt",
- sep = "\t", quote = FALSE, row.names = FALSE)
+ar_genes <- strsplit(subset(enrich_child_df, Term == "AR CHEA")$Genes, ";")[[1]]
+subset(gene_cohort_summary, Symbol %in% ar_genes) %>% 
+  dplyr::select(Symbol, adj.P.Val, logFC, P.Value, dimorphic) %>%
+  arrange(P.Value) %>%
+  data.frame()
 
-
-## CIBERSORT-based cell type proportion
-cibersort <- read_tsv("results/CIBERSORT/CIBERSORTx_Job6_Adjusted.txt", name_repair = "universal")
-ciber_cells <- colnames(cibersort)[2:23]
-ciber_cells <- ciber_cells[ciber_cells != "T.cells.follicular.helper"]
-clr_cibersort <- clr(data.matrix(cibersort[, ciber_cells])) %>%
-  as.data.frame() %>%
-  mutate(HelixID = cibersort$Mixture) 
-
-clr_cibersort_tib <- left_join(clr_cibersort, 
-  colData(se.noY)[, c("age_sample_years", "e3_sex", "cohort", "HelixID")] %>% as.data.frame(), 
-  by = "HelixID") %>%
-  as_tibble()
-clr_cibersort_tests <- lapply(ciber_cells, function(cell) {
-  lm_mod <- robustbase::lmrob(as.formula(paste(cell, "~ e3_sex + age_sample_years + cohort")), data = clr_cibersort_tib) %>%
-    summary() 
-  tibble(Cell = cell, 
-         Estimate = coef(lm_mod)[2, 1], 
-         Estimate_exp = exp(coef(lm_mod)[2, 1]),
-         Pvalue = coef(lm_mod)[2, 4])
-}) %>% Reduce(rbind, .)
-write.table(clr_cibersort_tests, file = "results/genes/cibersort_celltype_proportion_tests.txt",
-            sep = "\t", quote = FALSE, row.names = FALSE)
 
 
 ### Manhattan ####
@@ -364,7 +336,7 @@ man_tab_child$pval <- ifelse(man_tab_child$P.Value < 1e-200, 1e-200, man_tab_chi
 man_plot_children <- manhattan_plot(x = man_tab_child, pval.colname = "pval", 
                            signif = c(0.05/nrow(man_tab_child)),
                            chr.colname = "chrNum", pos.colname = "Position",
-                           plot.title = "Children (767 individuals)",
+                           plot.title = "Children",
                            rescale = FALSE,
                            label.colname = "Genes") +
   theme(plot.title = element_text(hjust = 0.5)) 
@@ -526,7 +498,7 @@ rs3_raw <- read_xlsx("results/genes/RSIII_TWAS_results_raw_v2.xlsx")
 # save(tab.gse33828, file = "results/genes/gse33828_analysis.Rdata")
 
 ## Combine adult results ####
-### Sup Table 4
+### Sup Table 3
 tab.array <- inner_join(rs3_raw, tab.ship.main, by = c("GeneSymbol" = "ILMN_Gene"), 
                         suffix = c(".ship", ".rs3")) 
 
@@ -608,28 +580,30 @@ table(tab.array$Dimorphic, tab.array$logFC > 0)
 #             cor_helix_rs3 = cor(EffectSize, logFC.gtex, use = "complete.obs"),
 #             cor_ship_rs3 = cor(logFC.ship, EffectSize, use = "complete.obs"))
 
+## Gene annotation
+annot <- read_delim("data/GPL10558-50081.txt", comment = "#", delim = "\t")
+annot_short <- select(annot, Symbol, Chromosome, Probe_Coordinates) %>%
+  group_by(Symbol) %>%
+  arrange(Symbol) %>%
+  slice_head(n = 1) %>%
+  mutate(Chromosome = paste("chr", Chromosome, sep = ""))
+### Make plots #####
+tab.array_chr <- left_join(tab.array, annot_short, by = c("GeneSymbol" = "Symbol"))
 
-write.table(tab.adult %>%
-  mutate(logFC.RS3 = logFC.gse33828,
-          P.Value.RS3 = P.Value.gse33828,
-          adj.P.Val.RS3 = adj.P.Val.gse33828,
-          CI.L.RS3 = CI.L.gse33828,
-          CI.R.RS3 = CI.R.gse33828,
-          logFC.ship = logFC.gse36382,
-          P.Value.ship = P.Value.gse36382,
-          adj.P.Val.ship = adj.P.Val.gse36382,
-          CI.L.ship = CI.L.gse36382,
-          CI.R.ship = CI.R.gse36382,
-          logFC.gtex = logFC,
-          P.Value.gtex = P.Value,
-          adj.P.Val.gtex = adj.P.Val,
-          CI.L.gtex = CI.L,
-          CI.R.gtex = CI.R,
-          logFC.Meta = logFC.com,
-          P.Value.Meta = P.Value.com,
-          adj.P.Val.Meta = adj.P.Val.com,
-          Chromosome = chromosome) %>%
-  select(Symbol, Chromosome,  ends_with("RS3"), ends_with("ship"), ends_with("gtex"), ends_with("Meta")), 
+write.table(tab.array_chr %>%
+  mutate(logFC.RS3 = EffectSize,
+          P.Value.RS3 = PValue,
+          adj.P.Val.RS3 = FDR,
+          CI.L.RS3 = CI_low,
+          CI.R.RS3 = CI_high,
+          logFC.ship = logFC,
+          P.Value.ship = P.Value,
+          adj.P.Val.ship = adj.P.Val,
+          CI.L.ship = CI.L,
+          CI.R.ship = CI.R,
+          Symbol = GeneSymbol) %>%
+  select(Symbol, Chromosome, Probe_Coordinates, ends_with("RS3"), ends_with("ship"), ends_with("fixed"), 
+  ends_with("random"), I2, Dimorphic), 
   file = "results/genes/adult_metaanalysis.txt", sep = "\t", 
   quote = FALSE, row.names = FALSE)
 
@@ -649,17 +623,9 @@ tab.array %>%
   theme(plot.title = element_text(hjust = 0.5))
 dev.off()
 
-## Gene annotation
-library(GEOquery)
-gpl <- getGEO("GPL10558")
-annot <- Table(gpl)
-
-annot_short <- select(annot, Symbol, Chromosome, Probe_Coordinates) %>%
-  group_by(Symbol) %>%
-  arrange(Symbol) %>%
-  slice_head(n = 1)
-### Make plots #####
-man.adult <- left_join(tab.array, annot_short, by = c("GeneSymbol" = "Symbol"))
+## Manhattan and volcano plots ####
+man.adult <- tab.array_chr
+man.adult$Chromosome <- gsub("chr", "", man.adult$Chromosome)
 man.adult$Chromosome <- ifelse(man.adult$Chromosome %in% c("XY", "Y", ""), "X", man.adult$Chromosome)
 man.adult$chrNum <- factor(man.adult$Chromosome, levels = c(1:22, "X"))
 
@@ -673,7 +639,7 @@ man.adult$Genes[man.adult$Genes == "NA"] <- ""
 man_adult_plot <- manhattan_plot(x = man.adult, pval.colname = "pval", 
                            signif = 0.05/nrow(man.adult),
                            chr.colname = "chrNum", pos.colname = "Position",
-                           plot.title = "Adults (1,752 individuals)",
+                           plot.title = "Adults",
                            rescale = FALSE,
                            label.colname = "Genes") +
   theme(plot.title = element_text(hjust = 0.5))
@@ -771,13 +737,13 @@ eul_GS_df <- enrich_genes.comb_out %>%
 
 ## Figure 3F
 overlap_TF_plot <- plot(euler(eul_GS_df[eul_GS_df$Type == "Transcription Factor", c("Adults", "Children")], shape = "ellipse"),
-                     fills = list(fill = c("blue", "orange"), alpha = 0.5),
+                     fills = list(fill = c("forestgreen", "orange"), alpha = 0.5),
                      quantities = list(fontsize = 12),
                      main = "Transcription Factors")
 
 ## Figure 3E
 overlap_Disease_plot <- plot(euler(eul_GS_df[eul_GS_df$Type != "Transcription Factor", c("Adults", "Children")], shape = "ellipse"),
-                             fills = list(fill = c("blue", "orange"), alpha = 0.5),
+                             fills = list(fill = c("forestgreen", "orange"), alpha = 0.5),
                              quantities = list(fontsize = 12),
                              main = "Phenotypes and Diseases")
 
@@ -812,11 +778,12 @@ topGeneSets <- enrich_genes_age2 %>%
   mutate(Term = factor(Term, levels = unique(c("Autistic Disorder", sel_terms))),
         logP = -log10(P.value),
         logP = ifelse(Term == "GATA1 CHEA" & Dataset == "Children", logP + 0.3, logP),
-        OR = Odds.Ratio) %>%
+        OR = Odds.Ratio,
+        Dataset = factor(Dataset, levels = c("Children", "Adults"))) %>%
   ggplot(aes(x = logP, y = Term, color = Dataset, size = OR)) +
   geom_point() +
   xlab(expression(-log[10]("p"))) + 
-  scale_color_manual(name = "", values = c("blue", "orange")) +
+  scale_color_manual(name = "", values = c( "orange", "forestgreen")) +
   theme_bw() +
   theme(plot.title = element_text(hjust = 0.5),
         text = element_text(size = 14))
@@ -849,7 +816,7 @@ comb_sig_prop <- comb_descrip %>%
   geom_bar(stat = "identity", position = "dodge") +
   ylab("Dimorphic genes (%)") +
   xlab("Gene location") +
-  scale_fill_manual(name = "", values = c( "orange", "blue")) +
+  scale_fill_manual(name = "", values = c( "orange", "forestgreen")) +
   theme_bw()
 png("figures/genes/adult_comparison.png", res = 300, height = 1200, width = 2000)
 comb_sig_prop
@@ -859,7 +826,7 @@ comb_descrip2 <- inner_join(gene_cohort_summary %>%
                         mutate(Dimorphic = dimorphic,
                                Direction = ifelse(logFC < 0, "Girls", "Boys")) %>%
                         dplyr::select(Symbol, Dimorphic, Direction, chr),
-                      man.adult %>%
+                      tab.array_chr %>%
                         mutate(Symbol = GeneSymbol,
                                Direction = ifelse(logFC < 0, "Girls", "Boys")) %>%
                         dplyr::select(Symbol, Dimorphic, Direction),
@@ -867,7 +834,18 @@ comb_descrip2 <- inner_join(gene_cohort_summary %>%
     mutate(Dimorphic_comb = ifelse(Dimorphic.Children == "Dimorphic", 
                                    ifelse(Dimorphic.Adults == "Dimorphic", "Shared", "Children"),
                                    ifelse(Dimorphic.Adults == "Dimorphic", "Adults", "None"))) %>%
-  filter(Dimorphic_comb != "None")
+  filter(Dimorphic_comb != "None") %>%
+  mutate(Children = ifelse(Dimorphic.Children == "Dimorphic", TRUE, FALSE),
+         Adults = ifelse(Dimorphic.Adults == "Dimorphic", TRUE, FALSE))
+
+overlap_genes_plot <- plot(euler(comb_descrip2[, c("Children", "Adults")], shape = "ellipse"),
+                     fills = list(fill = c("forestgreen", "orange"), alpha = 0.5),
+                     quantities = list(fontsize = 12),
+                     main = "Genes")
+
+png("figures/genes/overlap_genes.png", res = 300, height = 1200, width = 2000)
+overlap_genes_plot
+dev.off()
 
 ### Sex comparison ####
 ## Figure 3F
@@ -881,22 +859,27 @@ comb_girl_prop <- comb_descrip %>%
   ylab("Women Overexpression (%)") +
   xlab("Dimorphic genes locus") +
   geom_hline(yintercept = 50, linetype = "dashed") +
-  scale_fill_manual(name = "", values = c( "orange", "blue")) +
+  scale_fill_manual(name = "", values = c( "orange", "forestgreen")) +
   theme_bw()
 png("figures/genes/adult_comparison_girlsprop.png", res = 300, height = 1200, width = 2000)
 comb_girl_prop
 dev.off()
 
 
+
+
 ## Figure 3
-png("figures/genes/dimorphic_gexp_panel2.png", res = 300, height = 3600, width = 4000)
+png("figures/genes/dimorphic_gexp_panel2.png", res = 300, height = 3600, width = 4400)
 plot_grid(
   plot_grid(man_plot_children, volcano_plot_children, ncol = 2, rel_widths = c(1.8, 1), labels = c("A", "B")),
   plot_grid(man_adult_plot, volcano_adult_plot,  ncol = 2, rel_widths = c(1.8, 1), labels = c("C", "D")),
   plot_grid(
-    plot_grid(comb_sig_prop, comb_girl_prop, overlap_Disease_plot, overlap_TF_plot, overlap_Disease_plot,
-      ncol = 2, nrow = 2, labels = c("E", "F", "G", "")),
-    topGeneSets, ncol = 2, rel_widths = c(1.5, 1), labels = c("", "H")),
+    plot_grid(
+      plot_grid(comb_sig_prop, comb_girl_prop, ncol = 2, nrow = 1, labels = c("E", "F",  "")),
+      plot_grid(overlap_genes_plot, NULL, overlap_TF_plot, NULL, overlap_Disease_plot, 
+      nrow = 1, labels = c("G", "H", ""), rel_widths = c(1, 0.05, 0.7, 0.05, 1)),
+      nrow = 2),
+  topGeneSets, ncol = 2, rel_widths = c(1.5, 1), labels = c("", "I")),
   nrow = 3, rel_heights = c(1, 1, 2)
 )
 dev.off()
@@ -915,21 +898,32 @@ group_by(tab.ship_joint, Dimorphic) %>%
             main_pre = cor(logFC.pre, logFC, use = "complete.obs"))
 
 
-png("figures/genes/ship_pre_post.png", width = 1500, height = 1500, res = 300)
-ggplot(tab.ship_joint, aes(x = logFC.pre, y = logFC.post)) +
+png("figures/genes/ship_pre_post.png", width = 1800, height = 1500, res = 300)
+tab.ship_joint %>%
+  mutate(Effect = ifelse(Dimorphic == "Dimorphic", ifelse(logFC > 0, "Higher Men", "Higher Women"), "No differences")) %>%
+  ggplot(aes(x = logFC.pre, y = logFC.post, color = Effect)) +
   geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black") +
   geom_point() +
   theme_bw() +
+  scale_color_manual(values = c("Higher Men" = "blue", "Higher Women" = "maroon", "No differences" = "black")) +
   xlab("Pre-menopause logFC") +
   ylab("Post-menopause logFC") +
   facet_grid(Dimorphic ~.) +
-  stat_cor(method = "pearson", label.x = -0.5, label.y = 0.5)
+  stat_cor(data = tab.ship_joint, inherit.aes = FALSE, aes(x = logFC.pre, y = logFC.post), method = "pearson", label.x = -0.5, label.y = 0.5)
 dev.off()
+
+write.table(tab.ship_joint %>%
+select(ILMN_Gene, chr, ends_with(".pre"), ends_with(".post"), Dimorphic), 
+file = "results/genes/SHIP_menopause_results.txt", sep = "\t", quote = FALSE, row.names = FALSE)
+
 
 ## Comparison with GTEx
 ## GTEx ####
 load("results/preprocessFiles/gexp_gtex_sva_sex.Rdata")
 ciber_cells_gtex <- colnames(colData(gtex_cells_filt))[390:411]
+ciber_cells_callrate <- sapply(ciber_cells_gtex, function(x) mean(colData(gtex_cells_filt)[, x] > 0.01))
+ciber_cells <- ciber_cells_gtex[ciber_cells_callrate > 0.05]
+
 
 mod_gtex <- model.matrix(formula(paste("~ sex + AGE + ischemic + gtex.smrin +", paste(ciber_cells, collapse = "+"), "+",
                                               paste(paste0("SV", 1:56), collapse = "+"))),
@@ -944,122 +938,132 @@ tab.gtex <- topTable(lm.gtex, coef = 2, n = Inf, confint = TRUE)
 tab.gtex$Symbol <- rowData(blood_gtex_noY)[rownames(tab.gtex), "gene_name"]
 tab.gtex$chromosome <- as.character(seqnames(blood_gtex_noY[rownames(tab.gtex)]))
 save(tab.gtex, file = "results/genes/gtex_analysis.Rdata")
-
-### Run analysis stratified by ventilator
-load("results/preprocessFiles/gexp_gtex_vent_stratified.Rdata")
-
-ciber_cells_filt <- ciber_cells[ciber_cells != "Dendritic.cells.resting"]
-
-mod_gtex_vent <- model.matrix(formula(paste("~ sex + AGE + ischemic + gtex.smrin +", paste(ciber_cells_filt, collapse = "+"), "+",
-                                              paste(paste0("SV", 1:40), collapse = "+"))),
-                                data = colData(gtex_vent))
-
-vent_gtex_noY <- gtex_vent[as.character(seqnames(gtex_vent)) %in% paste0("chr", c(1:22, "X")), ]
-
-vent_voom <- voom(assay(vent_gtex_noY), mod_gtex_vent)
-lm.vent <- lmFit(vent_voom, mod_gtex_vent) %>%
-  eBayes()
-tab.vent <- topTable(lm.vent, coef = 2, n = Inf, confint = TRUE)
-tab.vent$Symbol <- rowData(vent_gtex_noY)[rownames(tab.vent), "gene_name"]
-tab.vent$chromosome <- as.character(seqnames(vent_gtex_noY[rownames(tab.vent)]))
-tab.vent$ENSG <- rownames(tab.vent)
+write.table(tab.gtex %>%
+  mutate(ENSG = rownames(tab.gtex)) %>%
+  select(ENSG, Symbol, chromosome, logFC,CI.L, CI.R, P.Value, adj.P.Val), 
+  file = "results/genes/gtex_results.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 
 
-mod_gtex_novent <- model.matrix(formula(paste("~ sex + AGE + ischemic + gtex.smrin +", paste(ciber_cells_filt, collapse = "+"), "+",
-                                              paste(paste0("SV", 1:30), collapse = "+"))),
-                                data = colData(gtex_novent))
+# ### Run analysis stratified by ventilator
+# load("results/preprocessFiles/gexp_gtex_vent_stratified.Rdata")
 
-novent_gtex_noY <- gtex_novent[as.character(seqnames(gtex_novent)) %in% paste0("chr", c(1:22, "X")), ]
+# ciber_cells_filt <- ciber_cells[ciber_cells != "Dendritic.cells.resting"]
 
-novent_voom <- voom(assay(novent_gtex_noY), mod_gtex_novent)
-lm.novent <- lmFit(novent_voom, mod_gtex_novent) %>%
-  eBayes()
-tab.novent <- topTable(lm.novent, coef = 2, n = Inf, confint = TRUE)
-tab.novent$Symbol <- rowData(novent_gtex_noY)[rownames(tab.novent), "gene_name"]
-tab.novent$chromosome <- as.character(seqnames(novent_gtex_noY[rownames(tab.novent)]))
-tab.novent$ENSG <- rownames(tab.novent)
-save(tab.vent, tab.novent, file = "results/genes/gtex_analysis_ventilator.Rdata")
+# mod_gtex_vent <- model.matrix(formula(paste("~ sex + AGE + ischemic + gtex.smrin +", paste(ciber_cells_filt, collapse = "+"), "+",
+#                                               paste(paste0("SV", 1:40), collapse = "+"))),
+#                                 data = colData(gtex_vent))
 
-tab.strat <- left_join(select(tab.vent, ENSG, Symbol, logFC, P.Value), select(tab.novent, ENSG, logFC, P.Value), 
-  by = "ENSG", suffix = c(".vent", ".novent")) %>%
-  as_tibble()
+# vent_gtex_noY <- gtex_vent[as.character(seqnames(gtex_vent)) %in% paste0("chr", c(1:22, "X")), ]
 
-
-tab.adult_strats <- left_join(tab.array, tab.strat, by = c("GeneSymbol" = "Symbol"), suffix = c(".array", ".gtex")) %>%
-  as_tibble()
-
-group_by(tab.adult_strats, Dimorphic, logFC < 0) %>%
-  summarize(vent = cor(logFC.com, logFC.vent, use = "complete.obs"),
-  no_vent = cor(logFC.com, logFC.novent, use = "complete.obs"),
-  vent_no_vent = cor(logFC.vent, logFC.novent, use = "complete.obs"))
+# vent_voom <- voom(assay(vent_gtex_noY), mod_gtex_vent)
+# lm.vent <- lmFit(vent_voom, mod_gtex_vent) %>%
+#   eBayes()
+# tab.vent <- topTable(lm.vent, coef = 2, n = Inf, confint = TRUE)
+# tab.vent$Symbol <- rowData(vent_gtex_noY)[rownames(tab.vent), "gene_name"]
+# tab.vent$chromosome <- as.character(seqnames(vent_gtex_noY[rownames(tab.vent)]))
+# tab.vent$ENSG <- rownames(tab.vent)
 
 
-png("figures/genes/array_vs_vent.png", width = 1500, height = 1500, res = 300)
-tab.adult_strats %>% mutate(Effect = ifelse(Dimorphic == "Dimorphic", ifelse(logFC.com > 0, "Higher Boys", "Higher Girls"), "No differences")) %>%
-  ggplot( aes(x = logFC.com, y = logFC.vent, color = Effect)) +
-  geom_point() +
-  xlab("logFC Meta-analysis") +
-  ylab("logFC GTEx") +
-  scale_color_manual(values = c("Higher Boys" = "blue", "Higher Girls" = "maroon", "No differences" = "black")) +
-  facet_grid(Dimorphic ~.) +
-  theme_bw() +
-  stat_cor(method = "pearson", label.x = -1.2, label.y = -0.7, 
-  color = "black") +
-  theme(legend.position = "none")
+# mod_gtex_novent <- model.matrix(formula(paste("~ sex + AGE + ischemic + gtex.smrin +", paste(ciber_cells_filt, collapse = "+"), "+",
+#                                               paste(paste0("SV", 1:30), collapse = "+"))),
+#                                 data = colData(gtex_novent))
 
-dev.off()
+# novent_gtex_noY <- gtex_novent[as.character(seqnames(gtex_novent)) %in% paste0("chr", c(1:22, "X")), ]
 
-png("figures/genes/array_vs_novent.png", width = 1500, height = 1500, res = 300)
-tab.adult_strats %>% mutate(Effect = ifelse(Dimorphic == "Dimorphic", ifelse(logFC.com > 0, "Higher Boys", "Higher Girls"), "No differences")) %>%
-  ggplot( aes(x = logFC.com, y = logFC.novent, color = Effect)) +
-  geom_point() +
-  xlab("logFC Meta-analysis") +
-  ylab("logFC GTEx") +
-  scale_color_manual(values = c("Higher Boys" = "blue", "Higher Girls" = "maroon", "No differences" = "black")) +
-  facet_grid(Dimorphic ~.) +
-  theme_bw() +
-  stat_cor(method = "pearson", label.x = -1.2, label.y = -0.7, 
-  color = "black") +
-  theme(legend.position = "none")
-dev.off()
+# novent_voom <- voom(assay(novent_gtex_noY), mod_gtex_novent)
+# lm.novent <- lmFit(novent_voom, mod_gtex_novent) %>%
+#   eBayes()
+# tab.novent <- topTable(lm.novent, coef = 2, n = Inf, confint = TRUE)
+# tab.novent$Symbol <- rowData(novent_gtex_noY)[rownames(tab.novent), "gene_name"]
+# tab.novent$chromosome <- as.character(seqnames(novent_gtex_noY[rownames(tab.novent)]))
+# tab.novent$ENSG <- rownames(tab.novent)
+# save(tab.vent, tab.novent, file = "results/genes/gtex_analysis_ventilator.Rdata")
 
-png("figures/genes/vent_vs_novent.png", width = 1500, height = 1500, res = 300)
-tab.strat %>% mutate(Dim_vent = ifelse(P.Value.vent  < 1e-4, "Ventilator Signif.", "Ventilator Not Signif."),
-Dim_novent = ifelse(P.Value.novent  < 1e-4, "Non-Ventilator Signif.", "Non-Ventilator Not Signif.")) %>%
-  ggplot( aes(x = logFC.vent, y = logFC.novent)) +
-  geom_point() +
-  xlab("logFC Ventilator") +
-  ylab("logFC Non-Ventilator") +
-  facet_grid(Dim_vent ~Dim_novent) +
+# tab.strat <- left_join(select(tab.vent, ENSG, Symbol, logFC, P.Value), select(tab.novent, ENSG, logFC, P.Value), 
+#   by = "ENSG", suffix = c(".vent", ".novent")) %>%
+#   as_tibble()
+
+
+# tab.adult_strats <- left_join(tab.array, tab.strat, by = c("GeneSymbol" = "Symbol"), suffix = c(".array", ".gtex")) %>%
+#   as_tibble()
+
+# group_by(tab.adult_strats, Dimorphic, logFC < 0) %>%
+#   summarize(vent = cor(logFC.com, logFC.vent, use = "complete.obs"),
+#   no_vent = cor(logFC.com, logFC.novent, use = "complete.obs"),
+#   vent_no_vent = cor(logFC.vent, logFC.novent, use = "complete.obs"))
+
+
+# png("figures/genes/array_vs_vent.png", width = 1500, height = 1500, res = 300)
+# tab.adult_strats %>% mutate(Effect = ifelse(Dimorphic == "Dimorphic", ifelse(logFC.com > 0, "Higher Boys", "Higher Girls"), "No differences")) %>%
+#   ggplot( aes(x = logFC.com, y = logFC.vent, color = Effect)) +
+#   geom_point() +
+#   xlab("logFC Meta-analysis") +
+#   ylab("logFC GTEx") +
+#   scale_color_manual(values = c("Higher Boys" = "blue", "Higher Girls" = "maroon", "No differences" = "black")) +
+#   facet_grid(Dimorphic ~.) +
+#   theme_bw() +
+#   stat_cor(method = "pearson", label.x = -1.2, label.y = -0.7, 
+#   color = "black") +
+#   theme(legend.position = "none")
+
+# dev.off()
+
+# png("figures/genes/array_vs_novent.png", width = 1500, height = 1500, res = 300)
+# tab.adult_strats %>% mutate(Effect = ifelse(Dimorphic == "Dimorphic", ifelse(logFC.com > 0, "Higher Boys", "Higher Girls"), "No differences")) %>%
+#   ggplot( aes(x = logFC.com, y = logFC.novent, color = Effect)) +
+#   geom_point() +
+#   xlab("logFC Meta-analysis") +
+#   ylab("logFC GTEx") +
+#   scale_color_manual(values = c("Higher Boys" = "blue", "Higher Girls" = "maroon", "No differences" = "black")) +
+#   facet_grid(Dimorphic ~.) +
+#   theme_bw() +
+#   stat_cor(method = "pearson", label.x = -1.2, label.y = -0.7, 
+#   color = "black") +
+#   theme(legend.position = "none")
+# dev.off()
+
+# png("figures/genes/vent_vs_novent.png", width = 1500, height = 1500, res = 300)
+# tab.strat %>% mutate(Dim_vent = ifelse(P.Value.vent  < 1e-4, "Ventilator Signif.", "Ventilator Not Signif."),
+# Dim_novent = ifelse(P.Value.novent  < 1e-4, "Non-Ventilator Signif.", "Non-Ventilator Not Signif.")) %>%
+#   ggplot( aes(x = logFC.vent, y = logFC.novent)) +
+#   geom_point() +
+#   xlab("logFC Ventilator") +
+#   ylab("logFC Non-Ventilator") +
+#   facet_grid(Dim_vent ~Dim_novent) +
   
-  theme_bw() +
-  stat_cor(method = "pearson", label.x = -10, label.y = 5, 
-  color = "black") +
-  theme(legend.position = "none")
-dev.off()
+#   theme_bw() +
+#   stat_cor(method = "pearson", label.x = -10, label.y = 5, 
+#   color = "black") +
+#   theme(legend.position = "none")
+# dev.off()
 
 
 
-df <- tibble(gexp = gtex_voom$E["ENSG00000206047.2",], 
-             sex = gtex_cells_filt$sex,
-             age = gtex_cells_filt$AGE,
-              B.cells.naive = gtex_cells_filt$B.cells.naive,
-              ischem = gtex_cells_filt$gtex.smtsisch,
-              hardy = factor(gtex_cells_filt$DTHHRDY))
+# df <- tibble(gexp = gtex_voom$E["ENSG00000206047.2",], 
+#              sex = gtex_cells_filt$sex,
+#              age = gtex_cells_filt$AGE,
+#               B.cells.naive = gtex_cells_filt$B.cells.naive,
+#               ischem = gtex_cells_filt$gtex.smtsisch,
+#               hardy = factor(gtex_cells_filt$DTHHRDY))
 
-summary(lm(gexp ~ sex + age, df))
-summary(lm(gexp ~ sex + age + B.cells.naive, df))
-summary(lm(gexp ~ sex*B.cells.naive, df))
-summary(lm(gexp ~ sex*ischem + age + B.cells.naive, df))
-summary(lm(gexp ~ sex*hardy + age + B.cells.naive, df))
+# summary(lm(gexp ~ sex + age, df))
+# summary(lm(gexp ~ sex + age + B.cells.naive, df))
+# summary(lm(gexp ~ sex*B.cells.naive, df))
+# summary(lm(gexp ~ sex*ischem + age + B.cells.naive, df))
+# summary(lm(gexp ~ sex*hardy + age + B.cells.naive, df))
 
-summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = ischem < 0))
-summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = ischem > 0))
-summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = hardy != 0))
-summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = hardy == 0))
+# summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = ischem < 0))
+# summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = ischem > 0))
+# summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = hardy != 0))
+# summary(lm(gexp ~ sex + age + B.cells.naive, df, subset = hardy == 0))
 
 ## CIBERSORT-based cell type proportion
-gtex_clr <- clr(data.matrix(colData(gtex_cells_filt)[, ciber_cells_gtex])) %>%
+ciber_mat <- acomp(data.matrix(colData(gtex_cells_filt)[, ciber_cells]))
+ciber_d <- apply(ciber_mat, 2, function(x) min(x[x > 0], na.rm = TRUE))
+ciber_mat_zero <- zeroreplace(ciber_mat, d = ciber_d)
+
+
+gtex_clr <- clr(ciber_mat_zero) %>%
   as.data.frame() %>%
   mutate(age = gtex_cells_filt$AGE,
   sex = gtex_cells_filt$sex,
@@ -1145,18 +1149,27 @@ ggplot(clr_df_tests, aes(x = Covariates, y = Cell_type, fill = minus_log10_p)) +
   )
 dev.off()
 
-clr_gtex_hardy_tests <- lapply(ciber_cells, function(cell) {
-  lm_mod <- lm(as.formula(paste(cell, "~ hardy + ischem + age + rin")), data = gtex_clr) %>%
-    summary() 
-})
+# clr_gtex_hardy_tests <- lapply(ciber_cells, function(cell) {
+#   lm_mod <- lm(as.formula(paste(cell, "~ hardy + ischem + age + rin")), data = gtex_clr) %>%
+#     summary() 
+# })
 
 
-clr_gtex_tests2 <- lapply(ciber_cells, function(cell) {
-  lm_mod <- lm(as.formula(paste(cell, "~ sex + age")), data = gtex_clr) %>%
-    summary() 
-  tibble(Cell = cell, 
-         Estimate = coef(lm_mod)[2, 1], 
-         Estimate_exp = exp(coef(lm_mod)[2, 1]),
+# clr_gtex_tests2 <- lapply(ciber_cells, function(cell) {
+#   lm_mod <- lm(as.formula(paste(cell, "~ sex + age")), data = gtex_clr) %>%
+#     summary() 
+#   tibble(Cell = cell, 
+#          Estimate = coef(lm_mod)[2, 1], 
+#          Estimate_exp = exp(coef(lm_mod)[2, 1]),
+#          Pvalue = coef(lm_mod)[2, 4])
+# }) %>% Reduce(rbind, .)
+
+## Check association between sex and covariates
+sex_covar_tests <- lapply(c("AGE", "gtex.smrin", "ischemic"), function(covar) {
+  lm_mod <- lm(as.formula(paste(covar, "~ sex")), data = colData(gtex_cells_filt)) %>%
+    summary()
+  tibble(Covariate = covar,
+         Estimate = coef(lm_mod)[2, 1],
          Pvalue = coef(lm_mod)[2, 4])
 }) %>% Reduce(rbind, .)
 
@@ -1181,7 +1194,7 @@ adult_comb_plot <- tab.adults %>% mutate(Effect = ifelse(Dimorphic == "Dimorphic
   facet_grid(Dimorphic ~ .) +
   theme_bw() +
   stat_cor(aes(group = Effect, color = Effect), method = "pearson", label.x = -1.2, label.y = c(0.5, 0.4, 0.5),
-    p.accuracy = 1e-7) +
+    p.accuracy = 1e-7, show.legend = FALSE) +
     scale_color_manual(values = c("Higher Men" = "blue", "Higher Women" = "maroon", "No differences" = "black"))
 
 png("figures/genes/array_vs_gtex.png", width = 1500, height = 1200, res = 300)
@@ -1236,7 +1249,7 @@ ggplot(effects_comb,
   geom_point(alpha = 0.7) +
   xlab("logFC Children") +
   ylab("logFC Adults") +
-  scale_color_manual(values = c("blue", "orange", "grey", "pink")) +
+  scale_color_manual(values = c("forestgreen", "orange", "black", "#CFCD8B")) +
   facet_wrap(~Dimorphic_comb) +
   theme_bw() +
   stat_cor(method = "pearson", label.x = -1.2, label.y = -0.7, 

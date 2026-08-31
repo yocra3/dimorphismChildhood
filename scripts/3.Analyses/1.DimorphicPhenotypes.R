@@ -116,10 +116,10 @@ names(phenos_sex_assoc) <- c(phenos_cont, phenos_cat, phenos_count, "hs_correct_
 ### Phenotypes summary ####
 ### Group phenotypes by categories 
 df_pheno_annot <- data.frame(var = names(pheno_vec_name), Phenotype = pheno_vec_name, 
-                             Category = rep(c("Anthropometric phenotypes", "Blood Pressure", "Allergy and Asthma", "Cognition and Neuro-behaviour"), c(7, 2, 4, 6))) %>%
+                             Category = rep(c("Anthropometric phenotypes", "Cardiovascular Traits", "Atopic Traits", "Cognition and Neuro-behaviour"), c(7, 2, 4, 6))) %>%
   mutate(var_type = ifelse(var %in% phenos_cont, "Continous", 
                            ifelse(var %in% phenos_cat, "Categorical", "Count")))
-df_pheno_annot$Category <- factor(df_pheno_annot$Category, levels = c("Anthropometric phenotypes", "Blood Pressure", "Allergy and Asthma", "Cognition and Neuro-behaviour"))
+df_pheno_annot$Category <- factor(df_pheno_annot$Category, levels = c("Anthropometric phenotypes", "Cardiovascular Traits", "Atopic Traits", "Cognition and Neuro-behaviour"))
 rownames(df_pheno_annot) <- df_pheno_annot$var
 
 df_pheno_assocs <- tibble(var = names(phenos_sex_assoc), 
@@ -161,7 +161,7 @@ plot_coef_anthro <- df_pheno_assocs %>%
 
 
 plot_coef_blood <- df_pheno_assocs %>%
-  filter(Category == "Blood Pressure") %>%
+  filter(Category == "Cardiovascular Traits") %>%
   arrange(Phenotype) %>%
   mutate(Phenotype = factor(Phenotype, levels = unique(Phenotype)),
          Direction = ifelse(Significance == "Significant", 
@@ -175,7 +175,7 @@ plot_coef_blood <- df_pheno_assocs %>%
     coord_flip() +
   ylab("Coefficient") +
   geom_hline(yintercept = 0) +
-  ggtitle("Blood Pressure")  +
+  ggtitle("Cardiovascular Traits")  +
   theme(legend.position = "none", 
         plot.title = element_text(hjust = 0.5),
         axis.text.y.right =  element_text(angle = 90, hjust = 0.5),
@@ -184,7 +184,7 @@ plot_coef_blood <- df_pheno_assocs %>%
 
 
 plot_coef_immune <- df_pheno_assocs %>%
-  filter(Category == "Allergy and Asthma") %>%
+  filter(Category == "Atopic Traits") %>%
   arrange(Category, Phenotype) %>%
   arrange(Phenotype) %>%
   mutate(coef = exp(coef),
@@ -203,7 +203,7 @@ plot_coef_immune <- df_pheno_assocs %>%
   ylab("Odds Ratio") +
     coord_flip() +
   scale_y_log10() +
-  ggtitle("Allergy and Asthma")  +
+  ggtitle("Atopic Traits")  +
   theme(legend.position = "none", 
         plot.title = element_text(hjust = 0.5),
         axis.text.y.right =  element_text(angle = 90, hjust = 0.5),

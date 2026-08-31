@@ -1,10 +1,11 @@
 ###############################################################################
 #' Create table with population descriptives
-#'  docker run -it -v $PWD:$PWD -w $PWD dimorphic_r:1.4 R
+#'  docker run -it -v $PWD:$PWD -w $PWD dimorphism_r:1.5 R
 ###############################################################################
 
 library(tidyverse)
 library(MASS)
+library(compositions)
 
 ## Load data ####
 load("results/preprocessFiles/filtered_phenotypes.Rdata")
@@ -285,7 +286,7 @@ sexCat <- lapply(c("cohort", "mat_educ"), getSumSex, type = "categorical", tab =
 sexCont <- lapply(cont_cov_Vars, getSumSex, tab = all_phenos) %>%
   Reduce(f = function(x, y) left_join(x, y, by = "e3_sex"), x = .) %>%
   left_join(sexCat, ., by = "e3_sex")
-colnames(sexCont)[-c(1:10)] <- cont_cov_Vars
+colnames(sexCont)[-c(1:11)] <- cont_cov_Vars
 
 allvec <- all_cov_Tab$text
 names(allvec) <- all_cov_Tab$names
@@ -308,3 +309,60 @@ contPvals <- function(varname, tab){
   summary(lm(var ~ e3_sex, tab))$coefficients[2, 4]
 }
 sapply(cont_cov_Vars, contPvals, tab = all_phenos)
+
+
+## Check cell type proportion
+### Methylation-based cell type proportion
+methy_cells <- c("NK_6", "Bcell_6", "CD4T_6", "CD8T_6", "Gran_6", "Mono_6")
+methy_mat <- acomp(data.matrix(all_phenos[, methy_cells]))
+d <- apply(methy_mat, 2, function(x) min(x[x > 0], na.rm = TRUE))
+methy_mat_zero <- zeroreplace(methy_mat, d = d)
+clr_methy <- methy_mat_zero$clr
+clr_methy_tib <- bind_cols(as_tibble(clr_methy), 
+  tibble(age = all_phenos$age_sample_years, sex = all_phenos$e3_sex, cohort = all_phenos$cohort))
+
+clr_methy_tests <- lapply(methy_cells, function(cell) {
+  lm_mod <- robustbase::lmrob(as.formula(paste(cell, "~ sex + age + cohort")), data = clr_methy_tib) %>%
+    summary() 
+  tibble(Cell = cell, 
+         Estimate = coef(lm_mod)[2, 1], 
+         Estimate_exp = exp(coef(lm_mod)[2, 1]),
+         Pvalue = coef(lm_mod)[2, 4])
+}) %>% Reduce(rbind, .)
+write.table(clr_methy_tests, file = "results/descriptives/methy_celltype_proportion_tests.txt",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+## CIBERSORT-based cell type proportion
+cibersort <- read_tsv("results/CIBERSORT/CIBERSORTx_Job6_Adjusted.txt", name_repair = "universal")
+ciber_cells <- colnames(cibersort)[2:23]
+ciber_cells_callrate <- sapply(ciber_cells, function(x) mean(cibersort[, x] > 0.01))
+
+
+ciber_cells <- ciber_cells[ciber_cells_callrate > 0.05]
+ciber_mat <- acomp(cibersort[, ciber_cells])
+ciber_d <- apply(ciber_mat, 2, function(x) min(x[x > 0], na.rm = TRUE))
+ciber_mat_zero <- zeroreplace(ciber_mat, d = ciber_d)
+clr_cibersort <- ciber_mat_zero$clr %>%
+  as.data.frame() %>%
+  mutate(HelixID = cibersort$Mixture) 
+
+clr_cibersort_tib <- left_join(clr_cibersort, 
+  all_phenos[, c("age_sample_years", "e3_sex", "cohort", "HelixID")] %>% as.data.frame(), 
+  by = "HelixID") %>%
+  as_tibble()
+clr_cibersort_tests <- lapply(ciber_cells, function(cell) {
+  lm_mod <- robustbase::lmrob(as.formula(paste(cell, "~ e3_sex + age_sample_years + cohort")),
+   data = clr_cibersort_tib, setting="KS2014") %>%
+    summary() 
+  tibble(Cell = cell, 
+         Estimate = coef(lm_mod)[2, 1], 
+         Estimate_exp = exp(coef(lm_mod)[2, 1]),
+         Pvalue = coef(lm_mod)[2, 4])
+}) %>% Reduce(rbind, .)
+write.table(clr_cibersort_tests, file = "results/descriptives/cibersort_celltype_proportion_tests.txt",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+
+
+cibersort_df <- left_join(cibersort, 
+  all_phenos[, c("age_sample_years", "e3_sex", "cohort", "HelixID")], by = c("Mixture" = "HelixID")) 
