@@ -28,6 +28,7 @@ all_phenos$cohort <- droplevels(all_phenos$cohort)
 
 ## Load Gene expression
 load("./results/preprocessFiles/Expression_SE_raw_filtered_SV.RData")
+load("data/gexpAnnotation.Rdata")
 
 se.filt$cohort <- droplevels(se.filt$cohort)
 
@@ -78,6 +79,7 @@ save(pheno_assocs.dim, file = "results/genes_phenos/dimorphic_phenos.Rdata")
 
 
 plotManhattan <- function(tab, title, p.thres = 1e-4){
+  p.thres <- max(tab$P.Value[tab$FDR < 0.05], na.rm = TRUE)
   tab$Position <- start(rowRanges(se.noY[rownames(tab, )]))
   tab$TC <- rownames(tab)
   tab$chr <- as.character(seqnames(se.noY[rownames(tab), ]))
@@ -97,7 +99,8 @@ plotManhattan <- function(tab, title, p.thres = 1e-4){
                              label.colname = "Genes") +
     theme(plot.title = element_text(hjust = 0.5)) +
     ylim(0, 8)
-
+  man_plot$layers[[2]] <- NULL ## Remove significance line
+  man_plot
 }
 
 
@@ -121,7 +124,7 @@ pheno_vec_name <- c( height = "Height",
                      hs_correct_raven =	"Non-verbal intelligence",
                      hs_Gen_Int	= "Internalizing scale",  
                      hs_Gen_Ext	= "Externalizing scale",
-                     hs_Cognit_raw = "Innatention index",
+                     hs_Cognit_raw = "Inattention index",
                      hs_Hyper_raw = "Hyperactivity index",
                      hs_ADHD_raw  = "ADHD index"     
 )
@@ -135,35 +138,49 @@ png("figures/genes_pheno/manhattan_phenotype.png", res = 300, height = 3000, wid
 plot_grid(plotlist = manhattans, ncol = 3)
 dev.off()
 
+## Combine all phenotype associations into a single table
+pheno_assocs.dim_tab <- Map(function(tab, phe){
+  tab$TC <- rownames(tab)
+  tab$Trait <- pheno_vec_name[phe]
+  tab
+}, pheno_assocs.dim, names(pheno_assocs.dim)) %>%
+  Reduce(rbind, .)
 
+pheno_assocs.dim_tab <-  left_join(pheno_assocs.dim_tab, dplyr::select(expAnnot, TC, GeneSymbol_Affy, Coding, seqname), by = "TC") %>%
+  mutate(Symbol = GeneSymbol_Affy, Chromosome = seqname) 
 
+write.table(pheno_assocs.dim_tab %>% 
+ dplyr::select(Trait, TC, Symbol, Chromosome, logFC, P.Value, FDR ),
+   file = "results/genes_phenos/dimorphic_phenos_results.txt", sep = "\t", quote = FALSE, row.names = FALSE)
 
 
 ### Explore genes ####
 pheno_gene.tab2 <- Reduce(rbind, lapply(phenos.dim, function(x) {
   sel <- subset(pheno_assocs.dim[[x]], FDR < 0.05)
   if(nrow(sel) == 0){
-    return(data.frame(TC = character(0), pheno = character(0), coef_pheno_tc = numeric(0)))
+    return(data.frame(TC = character(0), pheno = character(0), pheno_tc_coef = numeric(0), pheno_tc_pval = numeric(0), pheno_tc_FDR = numeric(0)))
   }
-  data.frame(TC = rownames(sel), pheno = x, coef_pheno_tc = sel$logFC)
+  data.frame(TC = rownames(sel), pheno = x, pheno_tc_coef = sel$logFC,  pheno_tc_pval = sel$P.Value, pheno_tc_FDR = sel$FDR)
 }))
 length(unique(pheno_gene.tab2$TC))
 table(pheno_gene.tab2$pheno)
 
 pheno_gene.tab2$Symbol <-  rowData(se.noY)[pheno_gene.tab2$TC, ]$GeneSymbolDB2
+pheno_gene.tab2$chromosome <-  left_join(pheno_gene.tab2, data.frame(TC = rownames(se.noY), chromosome = as.character(seqnames(se.noY))), by = "TC")$chromosome
 
 
 pheno_gene.tab_filt <- subset(pheno_gene.tab2, !pheno %in% c("hs_Hyper_raw", "hs_Cognit_raw"))
 length(unique(pheno_gene.tab_filt$TC))
 table(pheno_gene.tab_filt$pheno)
 table(pheno_gene.tab_filt$TC)
-
-
+nrow(pheno_gene.tab_filt)
+table(pheno_gene.tab_filt$chromosome)
 table(filter(gene_cohort_summary, TC %in% unique(pheno_gene.tab_filt$TC))$chr)
 
 ## Comparison with adults ####
 tab.adult.genepheno <- filter(tab.array, GeneSymbol %in% unique(pheno_gene.tab2$Symbol) )
 tab.gtex.genepheno <- filter(tab.gtex, Symbol %in% unique(pheno_gene.tab2$Symbol) )
+
 
 
 ## Run dimorphism in tissues ####
@@ -250,10 +267,74 @@ sel_phenos <- unique(pheno_gene.tissue$pheno)
 phenos_tabs <- lapply(sel_phenos, function(phe){
 
   gene_df <- filter(pheno_gene.tissue, pheno == phe) %>%
-    dplyr::select(TC, pheno, coef_pheno_tc, Symbol, chr, logFC_helix, P.Value_helix, logFC_genR, P.Value_genR,
+    dplyr::select(TC, pheno, pheno_tc_coef, pheno_tc_pval, Symbol, chr, logFC_helix, P.Value_helix, logFC_genR, P.Value_genR,
     logFC_adult, P.Value_adult, logFC_gtex, P.Value_gtex, ends_with(pheno_tissues_map[[phe]]))
 }) 
 names(phenos_tabs) <- sel_phenos
+
+for (phe in sel_phenos){
+  out_tab <- phenos_tabs[[phe]] %>%
+    filter(!is.na(Symbol) & Symbol != "NA") %>%
+    mutate(pheno = pheno_vec_name[phe]) %>%
+    dplyr::select(pheno, TC, Symbol, chr, everything()) %>%
+    rename_with(~ gsub("gtex", "Whole_Blood", .x)) %>%
+    rename_with(~ gsub("^pheno_tc", "Trait_TC", .x)) %>%
+    rename(Trait = pheno, Chromosome = chr)
+  write.table(out_tab, file = paste0("results/genes_phenos/", phe, "_gene_table.txt"),
+    sep = "\t", quote = FALSE, row.names = FALSE)
+}
+
+## Genes dimorphic in adults
+lapply(phenos_tabs, function(tab){
+  filter(tab, P.Value_adult < 0.05 & sign(logFC_helix) == sign(logFC_adult) )$Symbol
+}) %>% unlist() %>% unique() %>% length()
+
+## Genes dimorphic in specific tissues
+lapply(phenos_tabs[1:2], function(tab){
+  tissue_names <- c("Adipose_SC", "Adipose_Vis", "Liver", "Muscle")
+  matches <- sapply(tissue_names, function(t){
+    pcol <- paste0("P.Value_", t)
+    lcol <- paste0("logFC_", t)
+    if (!all(c(pcol, lcol) %in% colnames(tab))) return(rep(FALSE, nrow(tab)))
+    tab[[pcol]] < 0.05 & sign(tab[[lcol]]) == sign(tab$logFC_helix)
+  })
+  tab$TC[apply(matches, 1, any, na.rm = TRUE)]
+}) %>% unlist() %>% unique() %>% length()
+
+lapply(phenos_tabs[2], function(tab){
+  tissue_names <- c("Skin_Leg", "Skin_Suprapubic")
+  matches <- sapply(tissue_names, function(t){
+    pcol <- paste0("P.Value_", t)
+    lcol <- paste0("logFC_", t)
+    if (!all(c(pcol, lcol) %in% colnames(tab))) return(rep(FALSE, nrow(tab)))
+    tab[[pcol]] < 0.05 & sign(tab[[lcol]]) == sign(tab$logFC_helix)
+  })
+  tab$TC[apply(matches, 1, any, na.rm = TRUE)]
+}) %>% unlist() %>% unique() %>% length()
+
+## Genes dimorphic in brain tissues
+lapply(phenos_tabs[c("hs_ADHD_raw", "hs_Cognit_raw", "hs_Hyper_raw")], function(tab){
+  tissue_names <- c("Brain_PFC_BA9", "Brain_ACC_BA24", "Brain_Caudate", "Brain_Putamen", "Brain_NAcc", "Brain_Cerebellum")
+  matches <- sapply(tissue_names, function(t){
+    pcol <- paste0("P.Value_", t)
+    lcol <- paste0("logFC_", t)
+    if (!all(c(pcol, lcol) %in% colnames(tab))) return(rep(FALSE, nrow(tab)))
+    tab[[pcol]] < 0.05 & sign(tab[[lcol]]) == sign(tab$logFC_helix)
+  })
+  tab$TC[apply(matches, 1, any, na.rm = TRUE)]
+}) %>% unlist() %>% unique() %>% length()
+
+## chrX genes coherent with HELIX in every tissue (excluding adults, GenR and Whole Blood)
+lapply(phenos_tabs, function(tab){
+  tab_x <- filter(tab, chr == "chrX")
+  logfc_cols <- grep("^logFC_", colnames(tab_x), value = TRUE)
+  tissue_names <- setdiff(gsub("^logFC_", "", logfc_cols), c("helix", "genR", "adult", "gtex"))
+  matches <- sapply(tissue_names, function(t){
+    tab_x[[paste0("P.Value_", t)]] < 0.05 & sign(tab_x[[paste0("logFC_", t)]]) == sign(tab_x$logFC_helix)
+  })
+  if (is.null(dim(matches))) matches <- matrix(matches, ncol = length(tissue_names))
+  tab_x$TC[apply(matches, 1, function(x) all(!is.na(x)) && all(x))]
+}) %>% unlist() %>% unique() %>% length()
 
 labs_tissues <- c(
   "helix" = "HELIX",
@@ -278,7 +359,9 @@ labs_tissues <- c(
 plot_gene_concordance <- function(tab, main){
   tab %>%
     dplyr::select(Symbol, starts_with("logFC"), starts_with("P.Value_"), chr) %>%
-    mutate(chromosome = ifelse(chr == "chrX", "chrX", "Autosomic")) %>%
+    left_join(dplyr::select(xci_genes, Symbol, XCI), by = "Symbol") %>%
+    mutate(chromosome = ifelse(chr == "chrX", "chrX", "Autosomic"),
+    Gene = ifelse(!is.na(XCI) & XCI == "escape", paste0(Symbol, "*"), Symbol)) %>%
     pivot_longer(cols = matches("^(logFC|P\\.Value)_"), names_to = c(".value", "Tissue"), 
     names_pattern = "(logFC|P\\.Value)_(.+)") %>%
     mutate(Tissue = gsub("logFC_", "", Tissue),
@@ -291,7 +374,7 @@ plot_gene_concordance <- function(tab, main){
         TRUE ~ ""
       ),
     Direction = ifelse(logFC > 0, "Boys", "Girls"),) %>%
-    ggplot(aes(x = Tissue, y = Symbol, fill = logFC, color = Direction)) +
+    ggplot(aes(x = Tissue, y = Gene, fill = logFC, color = Direction)) +
     geom_tile() +
     ggtitle(main) +
     geom_text(aes(label = significance), size = 3,key_glyph = "text") +
@@ -316,6 +399,7 @@ phenos_tabs$hs_c_weight %>%
   filter(!Symbol %in% c("NA", "PRKX;RNU6-146P")) %>%
   plot_gene_concordance(main = "Weight")
 dev.off()
+
 
 weight_genes <- phenos_tabs$hs_c_weight %>%
   filter(Symbol %in% c("ZC3H12D", "TRAK2", "TCP11L2", 
@@ -358,7 +442,7 @@ dev.off()
 adhd_genes <- phenos_tabs$hs_ADHD_raw %>%
   filter(Symbol %in% c("TTL", "KIAA0368", "FANCC", "ZFX", "XIST", "UBA1", "SYAP1", 
   "KDM6A", "KDM5C", "JPX", "EIF1AX", "DDX3X")) %>%
-  plot_gene_concordance(main = "ADHD")
+  plot_gene_concordance(main = "ADHD index")
 
 png("figures/genes_pheno/heatmap_adhd_tissues_selGenes.png", width = 1500, height = 1500, res = 300)
 adhd_genes
@@ -368,13 +452,13 @@ dev.off()
 png("figures/genes_pheno/heatmap_innatention_tissues.png", width = 1500, height = 1800, res = 300)
 phenos_tabs$hs_Cognit_raw %>%
   filter(!Symbol %in% c("NA", "", "M55536;PANK3", "TXLNG;AX746622", "D28359;INTS6-AS1", "LOC389906", "HDHD1")) %>%
-  plot_gene_concordance(main = "Innatention index")
+  plot_gene_concordance(main = "Inattention index")
 dev.off()
 
 innatention_genes <- phenos_tabs$hs_Cognit_raw %>%
   filter(Symbol %in% c("KIAA0368", "FANCC", "ZFX", "XIST",  "SYAP1", 
   "KDM6A", "KDM5C", "JPX", "EIF1AX", "DDX3X")) %>%
-  plot_gene_concordance(main = "Innatention index")
+  plot_gene_concordance(main = "Inattention index")
 
 png("figures/genes_pheno/heatmap_innatention_tissues_selGenes.png", width = 1500, height = 1500, res = 300)
 innatention_genes
@@ -401,6 +485,10 @@ png("figures/genes_pheno/heatmap_adhd_second_tissues_selGenes.png", width = 3000
 plot_grid(innatention_genes + theme(legend.position = "none"), hyper_genes, ncol = 2, labels = c("A", "B"))
 dev.off()
 
+png("figures/genes_pheno/heatmap_panel.png", width = 3000, height = 2000, res = 300)
+plot_grid(weight_genes, skf_genes, adhd_genes, ncol = 3, 
+labels = "AUTO", rel_widths = c(1, 1, 1.4))
+dev.off()
 
 ## Check correlation with GTEx phenotypes
 adipose <- gtex_tissues_sva[["Adipose - Visceral (Omentum)"]]
@@ -459,6 +547,7 @@ df_gene <- tibble(ebf1 = adipose_cpm["ENSG00000164330.16", ],
   sts = adipose_cpm["ENSG00000101846.6", ],
   ddx18 = adipose_cpm["ENSG00000088205.12", ],
   pcbp2 = adipose_cpm["ENSG00000197111.15", ],
+  ap2a1 = adipose_cpm["ENSG00000196961.12", ],
   age = pheno_adipose2$AGE, bmi = pheno_adipose2$BMI, weight = pheno_adipose2$WGHT, 
   ischemic = pheno_adipose2$gtex.smtsisch, rin = pheno_adipose2$gtex.smrin) %>%
   cbind(pheno_adipose2 %>% dplyr::select(starts_with("SV")) %>% data.frame())
@@ -481,6 +570,7 @@ summary(lm(weight ~ sex + age + cxcl5, df_gene))
 summary(lm(bmi ~ sex + age + ddx18, df_gene))
 summary(lm(weight ~ sex + age + ddx18, df_gene))
 summary(lm(weight ~ sex*ddx18 + age, df_gene))
+summary(lm(ddx18 ~ sex*age, df_gene))
 
 summary(lm(bmi ~ sex + age + sts, df_gene))
 summary(lm(weight ~ sex + age + sts , df_gene))
@@ -488,19 +578,23 @@ summary(lm(weight ~ sex + age + sts , df_gene))
 summary(lm(bmi ~ sex + age + pcbp2, df_gene))
 summary(lm(weight ~ sex + age + pcbp2 , df_gene))
 
+summary(lm(bmi ~ sex + age + ap2a1, df_gene))
+summary(lm(weight ~ sex + age + ap2a1 , df_gene))
+summary(lm(weight ~ sex*ap2a1 + age, df_gene))
 
 cor(df_gene$ebf1, df_gene$weight)
 cor(df_gene$ifit1b, df_gene$weight)
 cor(df_gene$cxcl5, df_gene$weight)
 cor(df_gene$sts, df_gene$weight)
 cor(df_gene$ddx18, df_gene$weight)
+cor(df_gene$ap2a1, df_gene$weight)
 
 cor(df_gene$ebf1, df_gene$bmi)
 cor(df_gene$ifit1b, df_gene$bmi)
 cor(df_gene$cxcl5, df_gene$bmi)
 cor(df_gene$sts, df_gene$bmi)
 cor(df_gene$ddx18, df_gene$bmi)
-
+cor(df_gene$ap2a1, df_gene$bmi)
 
 weight_adipose <- ggplot(df_gene[df_gene$ddx18 > 4.5,], aes(x = ddx18, y = weight, color = sex)) +
   geom_point() +
@@ -517,6 +611,22 @@ png("figures/genes_pheno/weight_ddx18_adipose.png", width = 1500, height = 1500,
 weight_adipose
 dev.off()
 
+weight_adipose2 <- ggplot(df_gene, aes(x = pcbp2, y = weight, color = sex)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  facet_grid(~sex) +
+  scale_color_manual(values = c("Men" = "blue", "Women" = "maroon")) +
+  ylab("Weight (lb)") +
+  xlab("PCBP2 expression") +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5))
+
+png("figures/genes_pheno/weight_pcbp2_adipose.png", width = 1500, height = 1500, res = 300)
+weight_adipose2
+dev.off()
+
+
 
 sex_adipose <- ggplot(df_gene[df_gene$ddx18 > 4.5,], aes(y = ddx18, x = sex, color = sex)) +
   geom_boxplot() +
@@ -531,6 +641,18 @@ png("figures/genes_pheno/sex_ddx18_adipose.png", width = 1500, height = 1500, re
 sex_adipose
 dev.off()
 
+sex_adipose2 <- ggplot(df_gene, aes(y = ap2a1, x = sex, color = sex)) +
+  geom_boxplot() +
+  theme_bw() +
+  scale_color_manual(values = c("Men" = "blue", "Women" = "maroon")) +
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none") +
+  ggtitle("Adipose Visceral (Omentum)") +
+  ylab("AP2A1 expression") +
+  xlab("Sex") 
+
+png("figures/genes_pheno/sex_ap2a1_adipose.png", width = 1500, height = 1500, res = 300)
+sex_adipose2
+dev.off()
 
 png("figures/genes_pheno/assocs_panel.png", width = 3000, height = 3000, res = 300)
 plot_grid(

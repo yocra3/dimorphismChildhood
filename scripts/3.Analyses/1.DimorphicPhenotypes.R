@@ -57,7 +57,7 @@ pheno_vec_name <- c( height = "Height",
                      hs_correct_raven =	"Non-verbal intelligence",
                      hs_Gen_Int	= "Internalizing scale",  
                      hs_Gen_Ext	= "Externalizing scale",
-                     hs_Cognit_raw = "Innatention index",
+                     hs_Cognit_raw = "Inattention index",
                      hs_Hyper_raw = "Hyperactivity index",
                      hs_ADHD_raw  = "ADHD index"     
 )
@@ -216,7 +216,7 @@ plot_coef_neuro <- df_pheno_assocs %>%
           coef_low = exp(coef_low),
           coef_high = exp(coef_high),
           Phenotype = factor(Phenotype, 
-          levels = c("Innatention index", "Hyperactivity index", "ADHD index", 
+          levels = c("Inattention index", "Hyperactivity index", "ADHD index", 
             "Internalizing scale", "Externalizing scale", 
               "Non-verbal intelligence")),
          Direction = ifelse(Significance == "Significant", 
@@ -430,7 +430,7 @@ dev.off()
 phenos_cor_mat <- all_phenos[, df_pheno_assocs$var]
 
 ## Convert categorical phenos to numeric
-phenos_cor_mat[, subset(df_pheno_assocs, Category == "Allergy and Asthma")$var] <- phenos_cor_mat[, subset(df_pheno_assocs, Category == "Allergy and Asthma")$var] == "Yes"
+phenos_cor_mat[, subset(df_pheno_assocs, Category == "Atopic Traits")$var] <- phenos_cor_mat[, subset(df_pheno_assocs, Category == "Atopic Traits")$var] == "Yes"
 sel_phenos_cor <- cor(phenos_cor_mat, use = "complete")
 colnames(sel_phenos_cor) <- rownames(sel_phenos_cor) <- pheno_vec_name[colnames(sel_phenos_cor)]
 

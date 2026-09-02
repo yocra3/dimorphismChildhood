@@ -839,7 +839,7 @@ comb_descrip2 <- inner_join(gene_cohort_summary %>%
          Adults = ifelse(Dimorphic.Adults == "Dimorphic", TRUE, FALSE))
 
 overlap_genes_plot <- plot(euler(comb_descrip2[, c("Children", "Adults")], shape = "ellipse"),
-                     fills = list(fill = c("forestgreen", "orange"), alpha = 0.5),
+                     fills = list(fill = c("orange", "forestgreen" ), alpha = 0.5),
                      quantities = list(fontsize = 12),
                      main = "Genes")
 
